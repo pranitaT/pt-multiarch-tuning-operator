@@ -23,7 +23,8 @@ import "github.com/openshift/multiarch-tuning-operator/api/common"
 // LocalPlugins represents the plugins configuration for podplacementconfigs resource.
 // +kubebuilder:object:generate=true
 type LocalPlugins struct {
-	NodeAffinityScoring *NodeAffinityScoring `json:"nodeAffinityScoring,omitempty"`
+	NodeAffinityScoring      *NodeAffinityScoring      `json:"nodeAffinityScoring,omitempty"`
+	CELArchitecturePlacement *CELArchitecturePlacement `json:"celArchitecturePlacement,omitempty"`
 }
 
 // localPluginChecks is a map that associates a plugin name with a function that can
@@ -31,6 +32,9 @@ type LocalPlugins struct {
 var localPluginChecks = map[common.Plugin]func(lp *LocalPlugins) bool{
 	common.NodeAffinityScoringPluginName: func(lp *LocalPlugins) bool {
 		return lp.NodeAffinityScoring != nil && lp.NodeAffinityScoring.IsEnabled()
+	},
+	common.CELArchitecturePlacementPluginName: func(lp *LocalPlugins) bool {
+		return lp.CELArchitecturePlacement != nil && lp.CELArchitecturePlacement.IsEnabled()
 	},
 }
 

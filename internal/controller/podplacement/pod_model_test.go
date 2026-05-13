@@ -2139,3 +2139,431 @@ func TestPod_trackAffinitySource_AnnotationGrowth(t *testing.T) {
 		})
 	}
 }
+
+/*
+Copyright 2025 Red Hat, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Integration tests for CEL Architecture Placement Plugin
+
+func TestPod_RemoveArchitectureConstraints(t *testing.T) {
+	tests := []struct {
+		name    string
+		pod     *v1.Pod
+		wantPod *v1.Pod
+	}{
+		{
+			name: "Remove architecture from nodeSelector",
+			pod: NewPod().
+				WithNodeSelector(map[string]string{
+					utils.ArchLabel: "amd64",
+					"other-label":   "value",
+				}).
+				Build(),
+			wantPod: NewPod().
+				WithNodeSelector(map[string]string{
+					"other-label": "value",
+				}).
+				Build(),
+		},
+		{
+			name: "Remove architecture from nodeAffinity",
+			pod: NewPod().
+				WithNodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      utils.ArchLabel,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"amd64"},
+									},
+									{
+										Key:      "other-key",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"other-value"},
+									},
+								},
+							},
+						},
+					},
+				}).
+				Build(),
+			wantPod: NewPod().
+				WithNodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      "other-key",
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"other-value"},
+									},
+								},
+							},
+						},
+					},
+				}).
+				Build(),
+		},
+		{
+			name: "Remove architecture from both nodeSelector and nodeAffinity",
+			pod: NewPod().
+				WithNodeSelector(map[string]string{
+					utils.ArchLabel: "arm64",
+					"region":        "us-west",
+				}).
+				WithNodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      utils.ArchLabel,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"arm64"},
+									},
+								},
+							},
+						},
+					},
+				}).
+				Build(),
+			wantPod: NewPod().
+				WithNodeSelector(map[string]string{
+					"region": "us-west",
+				}).
+				WithNodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{},
+					},
+				}).
+				Build(),
+		},
+		{
+			name: "Pod with no architecture constraints",
+			pod: NewPod().
+				WithNodeSelector(map[string]string{
+					"region": "us-east",
+				}).
+				Build(),
+			wantPod: NewPod().
+				WithNodeSelector(map[string]string{
+					"region": "us-east",
+				}).
+				Build(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			pod := newPod(tt.pod, ctx, record.NewFakeRecorder(10))
+
+			pod.RemoveArchitectureConstraints()
+
+			// Check nodeSelector
+			if tt.wantPod.Spec.NodeSelector != nil {
+				g.Expect(pod.Spec.NodeSelector).To(Equal(tt.wantPod.Spec.NodeSelector))
+			}
+
+			// Check nodeAffinity
+			if tt.wantPod.Spec.Affinity != nil && tt.wantPod.Spec.Affinity.NodeAffinity != nil {
+				g.Expect(pod.Spec.Affinity.NodeAffinity).To(Equal(tt.wantPod.Spec.Affinity.NodeAffinity))
+			}
+		})
+	}
+}
+
+func TestPod_SetCELArchitectureAffinity(t *testing.T) {
+	tests := []struct {
+		name           string
+		pod            *v1.Pod
+		architectures  []string
+		ruleName       string
+		wantArchs      []string
+		wantLabel      bool
+		wantAnnotation bool
+	}{
+		{
+			name: "Set single architecture",
+			pod: NewPod().
+				WithName("test-pod").
+				WithNamespace("default").
+				Build(),
+			architectures:  []string{"ppc64le"},
+			ruleName:       "test-rule",
+			wantArchs:      []string{"ppc64le"},
+			wantLabel:      true,
+			wantAnnotation: true,
+		},
+		{
+			name: "Set multiple architectures",
+			pod: NewPod().
+				WithName("multi-arch-pod").
+				WithNamespace("production").
+				Build(),
+			architectures:  []string{"amd64", "arm64"},
+			ruleName:       "multi-arch-rule",
+			wantArchs:      []string{"amd64", "arm64"},
+			wantLabel:      true,
+			wantAnnotation: true,
+		},
+		{
+			name: "Replace existing architecture constraint",
+			pod: NewPod().
+				WithName("existing-pod").
+				WithNamespace("default").
+				WithNodeSelector(map[string]string{
+					utils.ArchLabel: "amd64",
+				}).
+				Build(),
+			architectures:  []string{"s390x"},
+			ruleName:       "replacement-rule",
+			wantArchs:      []string{"s390x"},
+			wantLabel:      true,
+			wantAnnotation: true,
+		},
+		{
+			name: "Set architectures with empty rule name",
+			pod: NewPod().
+				WithName("no-rule-name-pod").
+				WithNamespace("default").
+				Build(),
+			architectures:  []string{"arm64"},
+			ruleName:       "",
+			wantArchs:      []string{"arm64"},
+			wantLabel:      true,
+			wantAnnotation: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			pod := newPod(tt.pod, ctx, record.NewFakeRecorder(10))
+
+			pod.SetCELArchitectureAffinity(tt.architectures, tt.ruleName)
+
+			// Check that architecture constraints were set
+			g.Expect(pod.Spec.Affinity).ToNot(BeNil())
+			g.Expect(pod.Spec.Affinity.NodeAffinity).ToNot(BeNil())
+			g.Expect(pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution).ToNot(BeNil())
+
+			// Find the architecture requirement
+			found := false
+			for _, term := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+				for _, expr := range term.MatchExpressions {
+					if expr.Key == utils.ArchLabel {
+						found = true
+						g.Expect(expr.Operator).To(Equal(v1.NodeSelectorOpIn))
+						g.Expect(expr.Values).To(ConsistOf(tt.wantArchs))
+					}
+				}
+			}
+			g.Expect(found).To(BeTrue(), "Architecture requirement not found in node affinity")
+
+			// Check label
+			if tt.wantLabel {
+				g.Expect(pod.Labels).To(HaveKey(utils.CELArchitecturePlacementLabel))
+				g.Expect(pod.Labels[utils.CELArchitecturePlacementLabel]).To(Equal("true"))
+			}
+
+			// Check annotation
+			if tt.wantAnnotation {
+				g.Expect(pod.Annotations).To(HaveKey(utils.CELArchitecturePlacementRuleAnnotation))
+				g.Expect(pod.Annotations[utils.CELArchitecturePlacementRuleAnnotation]).To(Equal(tt.ruleName))
+			}
+		})
+	}
+}
+
+func TestPod_CELArchitecturePlacement_Integration(t *testing.T) {
+	tests := []struct {
+		name         string
+		pod          *v1.Pod
+		celPlugin    *plugins.CELArchitecturePlacement
+		wantArchs    []string
+		wantRuleName string
+	}{
+		{
+			name: "Pod matches first rule",
+			pod: NewPod().
+				WithName("postgres-db").
+				WithNamespace("production").
+				WithLabels(map[string]string{
+					"app.kubernetes.io/component": "database",
+					"app.kubernetes.io/part-of":   "postgresql",
+				}).
+				Build(),
+			celPlugin: &plugins.CELArchitecturePlacement{
+				FallbackArchitectures: []string{"amd64"},
+				Rules: []plugins.ArchitectureRule{
+					{
+						Name:          "postgres-on-ppc64le",
+						Expression:    "has(self.metadata.labels) && 'app.kubernetes.io/component' in self.metadata.labels && self.metadata.labels['app.kubernetes.io/component'] == 'database' && 'app.kubernetes.io/part-of' in self.metadata.labels && self.metadata.labels['app.kubernetes.io/part-of'] == 'postgresql'",
+						Architectures: []string{"ppc64le"},
+					},
+					{
+						Name:          "redis-on-amd64",
+						Expression:    "self.metadata.name.startsWith('redis-')",
+						Architectures: []string{"amd64", "arm64"},
+					},
+				},
+			},
+			wantArchs:    []string{"ppc64le"},
+			wantRuleName: "postgres-on-ppc64le",
+		},
+		{
+			name: "Pod matches second rule",
+			pod: NewPod().
+				WithName("redis-cache").
+				WithNamespace("production").
+				Build(),
+			celPlugin: &plugins.CELArchitecturePlacement{
+				FallbackArchitectures: []string{"amd64"},
+				Rules: []plugins.ArchitectureRule{
+					{
+						Name:          "postgres-on-ppc64le",
+						Expression:    "has(self.metadata.labels) && 'app.kubernetes.io/component' in self.metadata.labels && self.metadata.labels['app.kubernetes.io/component'] == 'database'",
+						Architectures: []string{"ppc64le"},
+					},
+					{
+						Name:          "redis-on-multi-arch",
+						Expression:    "self.metadata.name.startsWith('redis-')",
+						Architectures: []string{"amd64", "arm64"},
+					},
+				},
+			},
+			wantArchs:    []string{"amd64", "arm64"},
+			wantRuleName: "redis-on-multi-arch",
+		},
+		{
+			name: "Pod matches no rules - use fallback",
+			pod: NewPod().
+				WithName("generic-app").
+				WithNamespace("default").
+				Build(),
+			celPlugin: &plugins.CELArchitecturePlacement{
+				FallbackArchitectures: []string{"s390x", "ppc64le"},
+				Rules: []plugins.ArchitectureRule{
+					{
+						Name:          "specific-rule",
+						Expression:    "self.metadata.name == 'specific-pod'",
+						Architectures: []string{"amd64"},
+					},
+				},
+			},
+			wantArchs:    []string{"s390x", "ppc64le"},
+			wantRuleName: "",
+		},
+		{
+			name: "Pod with existing constraints - replaced by CEL rule",
+			pod: NewPod().
+				WithName("nginx-web").
+				WithNamespace("production").
+				WithNodeSelector(map[string]string{
+					utils.ArchLabel: "amd64",
+					"region":        "us-west",
+				}).
+				WithNodeAffinity(&v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchExpressions: []v1.NodeSelectorRequirement{
+									{
+										Key:      utils.ArchLabel,
+										Operator: v1.NodeSelectorOpIn,
+										Values:   []string{"amd64"},
+									},
+								},
+							},
+						},
+					},
+				}).
+				Build(),
+			celPlugin: &plugins.CELArchitecturePlacement{
+				FallbackArchitectures: []string{"amd64"},
+				Rules: []plugins.ArchitectureRule{
+					{
+						Name:          "nginx-on-arm64",
+						Expression:    "self.metadata.name.startsWith('nginx-')",
+						Architectures: []string{"arm64"},
+					},
+				},
+			},
+			wantArchs:    []string{"arm64"},
+			wantRuleName: "nginx-on-arm64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			pod := newPod(tt.pod, ctx, record.NewFakeRecorder(10))
+
+			// Get CEL evaluator
+			evaluator, err := GetCELEvaluator()
+			g.Expect(err).ToNot(HaveOccurred())
+
+			// Evaluate rules
+			architectures, err := evaluator.EvaluateRules(tt.pod, tt.celPlugin)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(architectures).To(ConsistOf(tt.wantArchs))
+
+			// Apply the architecture affinity
+			ruleName := ""
+			for _, rule := range tt.celPlugin.Rules {
+				matches, err := evaluator.EvaluateExpression(rule.Name, tt.pod)
+				if err == nil && matches {
+					ruleName = rule.Name
+					break
+				}
+			}
+
+			pod.SetCELArchitectureAffinity(architectures, ruleName)
+
+			// Verify the result
+			g.Expect(pod.Spec.Affinity).ToNot(BeNil())
+			g.Expect(pod.Spec.Affinity.NodeAffinity).ToNot(BeNil())
+
+			// Check that old architecture constraints were removed from nodeSelector
+			if pod.Spec.NodeSelector != nil {
+				g.Expect(pod.Spec.NodeSelector).ToNot(HaveKey(utils.ArchLabel))
+			}
+
+			// Check that new architecture constraints were set
+			found := false
+			for _, term := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+				for _, expr := range term.MatchExpressions {
+					if expr.Key == utils.ArchLabel {
+						found = true
+						g.Expect(expr.Values).To(ConsistOf(tt.wantArchs))
+					}
+				}
+			}
+			g.Expect(found).To(BeTrue())
+
+			// Check labels and annotations
+			g.Expect(pod.Labels).To(HaveKey(utils.CELArchitecturePlacementLabel))
+			if tt.wantRuleName != "" {
+				g.Expect(pod.Annotations).To(HaveKey(utils.CELArchitecturePlacementRuleAnnotation))
+				g.Expect(pod.Annotations[utils.CELArchitecturePlacementRuleAnnotation]).To(Equal(tt.wantRuleName))
+			}
+		})
+	}
+}

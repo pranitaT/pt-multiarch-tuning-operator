@@ -21,9 +21,11 @@ const (
 )
 
 const (
-	ArchLabel                  = "kubernetes.io/arch"
-	NodeAffinityLabel          = "multiarch.openshift.io/node-affinity"
-	PreferredNodeAffinityLabel = "multiarch.openshift.io/preferred-node-affinity"
+	ArchLabel                              = "kubernetes.io/arch"
+	NodeAffinityLabel                      = "multiarch.openshift.io/node-affinity"
+	PreferredNodeAffinityLabel             = "multiarch.openshift.io/preferred-node-affinity"
+	CELArchitecturePlacementLabel          = "multiarch.openshift.io/cel-architecture-placement"
+	CELArchitecturePlacementRuleAnnotation = "multiarch.openshift.io/cel-architecture-placement-rule"
 	// PreferredNodeAffinitySourcesAnnotation tracks the complete audit trail of which
 	// configurations (ClusterPodPlacementConfig or PodPlacementConfig) attempted to set
 	// preferred node affinity for which architectures on a pod.

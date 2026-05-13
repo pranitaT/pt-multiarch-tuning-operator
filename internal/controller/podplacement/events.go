@@ -13,6 +13,7 @@ const (
 	NoSupportedArchitecturesFound                 = "NoSupportedArchitecturesFound"
 	ArchitecturePreferredAffinityDuplicates       = "ArchAwarePreferredAffinityDuplicates"
 	ArchitectureAwareFallbackNodeAffinitySet      = "ArchAwareFallbackPredicateSet"
+	CELArchitecturePlacementApplied               = "CELArchitecturePlacementApplied"
 
 	SchedulingGateAddedMsg            = "Successfully gated with the " + utils.SchedulingGateName + " scheduling gate"
 	SchedulingGateRemovalSuccessMsg   = "Successfully removed the " + utils.SchedulingGateName + " scheduling gate"
