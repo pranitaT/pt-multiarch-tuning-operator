@@ -19,9 +19,11 @@ package podplacement
 import (
 	"context"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,6 +70,10 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	responseTimeStart := time.Now()
 	defer utils.HistogramObserve(responseTimeStart, metrics.ResponseTime)
 	metrics.ProcessedPodsWH.Inc()
+
+	// Generate TraceID for this webhook invocation
+	traceID := uuid.NewString()
+
 	a.once.Do(func() {
 		a.decoder = admission.NewDecoder(a.scheme)
 	})
@@ -77,7 +83,16 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	log := ctrllog.FromContext(ctx).WithValues("namespace", pod.Namespace, "name", pod.Name)
+
+	log := ctrllog.FromContext(ctx).WithValues("traceID", traceID, "namespace", pod.Namespace, "name", pod.Name)
+
+	log.Info("[WEBHOOK] ENTER",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"existingSchedulingGates", pod.Spec.SchedulingGates,
+		"labels", pod.Labels,
+		"ownerReferences", pod.OwnerReferences)
 
 	cppc := clusterpodplacementconfig.GetClusterPodPlacementConfig()
 
@@ -101,10 +116,32 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	pod.EnsureLabel(utils.SchedulingGateLabel, utils.LabelValueNotSet)
 
 	if pod.shouldIgnorePod(cppc, matchingPPCs) {
-		log.V(3).Info("Ignoring the pod")
+		log.Info("[WEBHOOK] RETURN - skipping pod",
+			"reason", "does not match criteria for processing",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"traceID", traceID)
 		return a.patchedPodResponse(pod.PodObject(), req)
 	}
 
+	// Apply CEL architecture placement in webhook before pod is persisted
+	a.applyCELInWebhook(ctx, pod, matchingPPCs)
+
+	// Check if scheduling gate already exists
+	if pod.HasSchedulingGate() {
+		log.Info("[WEBHOOK] RETURN - gate already exists",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"traceID", traceID,
+			"existingGates", pod.Spec.SchedulingGates)
+		return a.patchedPodResponse(pod.PodObject(), req)
+	}
+
+	log.Info("[WEBHOOK] Adding scheduling gate",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"gate", utils.SchedulingGateName)
 	pod.ensureSchedulingGate()
 	// We also add a label to the pod to indicate that the scheduling gate was added
 	// and this pod expects processing by the operator. That's useful for testing and debugging, but also gives the user
@@ -114,11 +151,14 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	// we don't care about this goroutine, it's informational,
 	// we know it will finish eventually by design, and we don't need to block the response as we
 	// are right in the admission pipeline, before the pod is persisted.
-	log.V(3).Info("Scheduling gate added to the pod, launching the event creation goroutine")
+	log.Info("[WEBHOOK] EXIT - gate added successfully",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"resultingSchedulingGates", pod.Spec.SchedulingGates)
 	a.delayedSchedulingGatedEvent(ctx, pod.DeepCopy())
 	metrics.GatedPods.Inc()
 	metrics.GatedPodsGauge.Inc()
-	log.V(2).Info("Accepting pod")
 	return a.patchedPodResponse(pod.PodObject(), req)
 }
 
@@ -162,6 +202,48 @@ func (a *PodSchedulingGateMutatingWebHook) delayedSchedulingGatedEvent(ctx conte
 	if err != nil {
 		ctrllog.FromContext(ctx).WithValues("namespace", pod.Namespace, "name", pod.Name,
 			"function", "delayedSchedulingGatedEvent").Error(err, "Failed to submit the delayedSchedulingGatedEvent job")
+	}
+}
+
+// applyCELInWebhook evaluates CEL architecture placement before the pod is persisted.
+// This ensures required architecture constraints are set during admission and avoids
+// immutable NodeSelectorTerms update failures during reconciliation.
+func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context, pod *Pod, matchingPPCs []multiarchv1beta1.PodPlacementConfig) {
+	log := ctrllog.FromContext(ctx)
+
+	// Sort matching PPCs by descending priority
+	sort.Slice(matchingPPCs, func(i, j int) bool {
+		return matchingPPCs[i].Spec.Priority > matchingPPCs[j].Spec.Priority
+	})
+
+	// Find the first PPC with CEL plugin enabled
+	for _, ppc := range matchingPPCs {
+		if !ppc.PluginsEnabled(common.CelArchitecturePlacementPluginName) {
+			continue
+		}
+
+		celPlugin := ppc.Spec.Plugins.CelArchitecturePlacement
+		if celPlugin == nil {
+			log.Error(nil, "[WEBHOOK] CEL plugin enabled but configuration is nil", "PodPlacementConfig", ppc.Name, "pod", pod.Name)
+			return
+		}
+
+		// Evaluate CEL rules
+		result, err := evaluateCELArchitecturePlacement(celPlugin.Rules, celPlugin.FallbackArchitectures, pod.PodObject())
+		if err != nil {
+			log.Error(err, "[WEBHOOK] Failed to evaluate CEL rules", "PodPlacementConfig", ppc.Name, "pod", pod.Name)
+			continue
+		}
+
+		// Apply architecture constraints
+		applyArchitectureConstraints(pod.PodObject(), result.architectures)
+		log.Info("[WEBHOOK] Applied CEL architecture constraints",
+			"pod", pod.Name,
+			"PodPlacementConfig", ppc.Name,
+			"architectures", result.architectures)
+
+		// Only apply the first matching PPC with CEL plugin
+		return
 	}
 }
 
