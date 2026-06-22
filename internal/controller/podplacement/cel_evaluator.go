@@ -188,7 +188,7 @@ func evaluateCELArchitecturePlacement(rules []plugins.ArchitectureRule, fallback
 		return nil, fmt.Errorf("failed to create CEL evaluator: %w", err)
 	}
 
-	// Evaluate rules in order
+	// Evaluate rules in order - detailed logging happens in the caller (cel_integration.go)
 	architectures, ruleName, err := evaluator.evaluateRules(rules, pod)
 	if err != nil {
 		return nil, fmt.Errorf("error evaluating CEL rules: %w", err)

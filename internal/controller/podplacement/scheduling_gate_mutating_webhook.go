@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,6 +69,10 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	responseTimeStart := time.Now()
 	defer utils.HistogramObserve(responseTimeStart, metrics.ResponseTime)
 	metrics.ProcessedPodsWH.Inc()
+	
+	// Generate TraceID for this webhook invocation
+	traceID := uuid.NewString()
+	
 	a.once.Do(func() {
 		a.decoder = admission.NewDecoder(a.scheme)
 	})
@@ -77,7 +82,16 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	log := ctrllog.FromContext(ctx).WithValues("namespace", pod.Namespace, "name", pod.Name)
+	
+	log := ctrllog.FromContext(ctx).WithValues("traceID", traceID, "namespace", pod.Namespace, "name", pod.Name)
+	
+	log.Info("[WEBHOOK] ENTER",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"existingSchedulingGates", pod.Spec.SchedulingGates,
+		"labels", pod.Labels,
+		"ownerReferences", pod.OwnerReferences)
 
 	cppc := clusterpodplacementconfig.GetClusterPodPlacementConfig()
 
@@ -101,10 +115,29 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	pod.EnsureLabel(utils.SchedulingGateLabel, utils.LabelValueNotSet)
 
 	if pod.shouldIgnorePod(cppc, matchingPPCs) {
-		log.V(3).Info("Ignoring the pod")
+		log.Info("[WEBHOOK] RETURN - skipping pod",
+			"reason", "does not match criteria for processing",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"traceID", traceID)
 		return a.patchedPodResponse(pod.PodObject(), req)
 	}
 
+	// Check if scheduling gate already exists
+	if pod.HasSchedulingGate() {
+		log.Info("[WEBHOOK] RETURN - gate already exists",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"traceID", traceID,
+			"existingGates", pod.Spec.SchedulingGates)
+		return a.patchedPodResponse(pod.PodObject(), req)
+	}
+
+	log.Info("[WEBHOOK] Adding scheduling gate",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"gate", utils.SchedulingGateName)
 	pod.ensureSchedulingGate()
 	// We also add a label to the pod to indicate that the scheduling gate was added
 	// and this pod expects processing by the operator. That's useful for testing and debugging, but also gives the user
@@ -114,11 +147,14 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	// we don't care about this goroutine, it's informational,
 	// we know it will finish eventually by design, and we don't need to block the response as we
 	// are right in the admission pipeline, before the pod is persisted.
-	log.V(3).Info("Scheduling gate added to the pod, launching the event creation goroutine")
+	log.Info("[WEBHOOK] EXIT - gate added successfully",
+		"pod", pod.Name,
+		"namespace", pod.Namespace,
+		"traceID", traceID,
+		"resultingSchedulingGates", pod.Spec.SchedulingGates)
 	a.delayedSchedulingGatedEvent(ctx, pod.DeepCopy())
 	metrics.GatedPods.Inc()
 	metrics.GatedPodsGauge.Inc()
-	log.V(2).Info("Accepting pod")
 	return a.patchedPodResponse(pod.PodObject(), req)
 }
 
