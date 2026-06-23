@@ -17,6 +17,11 @@ var (
 	TimeToInspectPodImages  prometheus.Histogram
 	ProcessedPodsCtrl       prometheus.Counter
 	FailedInspectionCounter prometheus.Counter
+
+	// CEL-related metrics for Phase 0+
+	ImageBasedProcessedPodsCtrl     prometheus.Counter
+	DeprecatedCELReconcilePathTotal prometheus.Counter
+	CELGateRemovalFailuresCtrl      prometheus.Counter
 )
 
 var onceController sync.Once
@@ -67,6 +72,38 @@ func initPodPlacementControllerMetrics() {
 			Help: "The total number of image inspections that failed",
 		},
 	)
-	metrics2.Registry.MustRegister(TimeToProcessPod, TimeToProcessGatedPod, TimeToInspectImage,
-		TimeToInspectPodImages, ProcessedPodsCtrl, FailedInspectionCounter)
+
+	// CEL-related metrics
+	ImageBasedProcessedPodsCtrl = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "mto_ppo_ctrl_image_based_processed_pods_total",
+			Help: "Total pods processed by image-based detection in controller",
+		},
+	)
+
+	DeprecatedCELReconcilePathTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "mto_ppo_ctrl_deprecated_cel_reconcile_path_total",
+			Help: "Total times deprecated CEL reconciler path was executed (should be zero)",
+		},
+	)
+
+	CELGateRemovalFailuresCtrl = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "mto_ppo_ctrl_cel_gate_removal_failures_total",
+			Help: "Total failures removing scheduling gate from CEL pods in Phase 3A",
+		},
+	)
+
+	metrics2.Registry.MustRegister(
+		TimeToProcessPod,
+		TimeToProcessGatedPod,
+		TimeToInspectImage,
+		TimeToInspectPodImages,
+		ProcessedPodsCtrl,
+		FailedInspectionCounter,
+		ImageBasedProcessedPodsCtrl,
+		DeprecatedCELReconcilePathTotal,
+		CELGateRemovalFailuresCtrl,
+	)
 }

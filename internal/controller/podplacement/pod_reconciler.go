@@ -111,6 +111,42 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	metrics.ProcessedPodsCtrl.Inc()
 	defer utils.HistogramObserve(now, metrics.TimeToProcessGatedPod)
 
+	// Fast-path for CEL-processed pods.
+	// Pods with the cel-processed label have already had their architecture constraints
+	// applied in the webhook (before persistence), so they don't need CEL evaluation here.
+	// The reconciler only needs to remove the scheduling gate to allow scheduling.
+	// This significantly reduces reconciler processing time and avoids redundant CEL evaluation.
+	if pod.Labels != nil && pod.Labels[utils.CELProcessedLabel] == utils.CELProcessedLabelValue {
+		log.Info("Fast-path: CEL already processed in webhook",
+			"traceID", traceID,
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"label", utils.CELProcessedLabel)
+
+		// Remove scheduling gate to allow pod scheduling
+		pod.RemoveSchedulingGate()
+
+		// Update pod to persist gate removal
+		err := r.Update(ctx, pod.PodObject())
+		if err != nil {
+			log.Error(err, "Fast-path: gate removal failed",
+				"traceID", traceID,
+				"pod", pod.Name,
+				"namespace", pod.Namespace)
+			pod.PublishEvent(corev1.EventTypeWarning, ArchitectureAwareSchedulingGateRemovalFailure, SchedulingGateRemovalFailureMsg)
+			metrics.CELGateRemovalFailuresCtrl.Inc()
+			return ctrl.Result{}, err
+		}
+
+		log.Info("Fast-path: gate removed successfully",
+			"traceID", traceID,
+			"pod", pod.Name,
+			"namespace", pod.Namespace)
+		pod.PublishEvent(corev1.EventTypeNormal, ArchitectureAwareSchedulingGateRemovalSuccess, SchedulingGateRemovalSuccessMsg)
+		metrics.GatedPodsGauge.Dec()
+		return ctrl.Result{}, nil
+	}
+
 	log.Info("[PROCESS] START", "traceID", traceID, "pod", pod.Name, "namespace", pod.Namespace)
 	r.processPod(ctx, pod, traceID)
 	log.Info("[PROCESS] END", "traceID", traceID, "pod", pod.Name, "namespace", pod.Namespace)
@@ -319,21 +355,30 @@ func (r *PodReconciler) applyMatchingPPCs(ctx context.Context, matchingPPCs []mu
 		return matchingPPCs[i].Spec.Priority > matchingPPCs[j].Spec.Priority
 	})
 
-	// Check for celArchitecturePlacement plugin first (highest priority)
-	// Only the first matching PPC with celArchitecturePlacement enabled is applied
+	// DEPRECATED: CEL evaluation in reconciler.
+	// This code path is deprecated and will be removed in a future release after observation period.
+	// CEL evaluation now happens in the webhook (before pod persistence) to avoid Kubernetes
+	// immutability violations on NodeSelectorTerms. This code remains only for backward compatibility
+	// with pods that were gated before the webhook changes were deployed.
+	// The deprecated_cel_reconcile_path_total metric tracks usage of this path.
 	celApplied := false
 	for _, ppc := range matchingPPCs {
 		if r.applyCELArchitecturePlacement(ctx, ppc, pod) {
-			log.V(1).Info("celArchitecturePlacement plugin applied, will skip image-based detection", "PodPlacementConfig", ppc.Name)
+			log.Info("DEPRECATED: CEL applied in reconciler",
+				"PodPlacementConfig", ppc.Name,
+				"pod", pod.Name,
+				"message", "CEL evaluation should happen in webhook, not reconciler")
+			metrics.DeprecatedCELReconcilePathTotal.Inc()
 			celApplied = true
-			// CEL plugin was applied, it takes precedence over image-based detection
-			// Continue to allow NodeAffinityScoring to run (coexistence per enhancement)
+			// CEL plugin takes precedence over image-based detection
+			// NodeAffinityScoring continues to run (coexistence per enhancement document)
 			break
 		}
 	}
 
-	// For each matching namespace-scoped configuration, apply NodeAffinityScoring if plugin is enabled
-	// This allows NodeAffinityScoring to coexist with celArchitecturePlacement per enhancement doc
+	// Apply NodeAffinityScoring from namespace-scoped PPCs.
+	// NodeAffinityScoring (preferred affinity) coexists with CEL (required affinity)
+	// per the enhancement document, allowing both plugins to work together.
 	for _, ppc := range matchingPPCs {
 		log.V(1).Info("Processing PodPlacementConfig", "namespace", ppc.Namespace, "name", ppc.Name)
 
