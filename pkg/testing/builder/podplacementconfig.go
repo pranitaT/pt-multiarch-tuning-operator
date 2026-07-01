@@ -1,4 +1,4 @@
-package builder
+﻿package builder
 
 import (
 	"github.com/openshift/multiarch-tuning-operator/api/common/plugins"
@@ -71,5 +71,23 @@ func (p *PodPlacementConfigBuilder) WithNodeAffinityScoringTerm(architecture str
 
 func (p *PodPlacementConfigBuilder) WithPriority(priority uint8) *PodPlacementConfigBuilder {
 	p.Spec.Priority = priority
+	return p
+}
+
+func (p *PodPlacementConfigBuilder) WithCelArchitecturePlacement(
+	enabled bool,
+	fallbackArchitectures []string,
+	rules []plugins.ArchitectureRule,
+) *PodPlacementConfigBuilder {
+	if p.Spec.Plugins == nil {
+		p.Spec.Plugins = &plugins.LocalPlugins{}
+	}
+	p.Spec.Plugins.CelArchitecturePlacement = &plugins.CelArchitecturePlacement{
+		BasePlugin: plugins.BasePlugin{
+			Enabled: enabled,
+		},
+		FallbackArchitectures: fallbackArchitectures,
+		Rules:                 rules,
+	}
 	return p
 }
