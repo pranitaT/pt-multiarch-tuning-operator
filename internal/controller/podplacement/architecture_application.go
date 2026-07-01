@@ -113,5 +113,3 @@ func applyArchitectureConstraints(pod *corev1.Pod, architectures []string) bool 
 	// Always return true because we always modify the pod by applying architecture constraints
 	return true
 }
-
-// Made with Bob

@@ -112,5 +112,3 @@ func (c *CelArchitecturePlacement) ValidateArchitectures() error {
 
 	return nil
 }
-
-// Made with Bob

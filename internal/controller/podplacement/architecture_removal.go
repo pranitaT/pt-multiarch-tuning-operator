@@ -113,5 +113,3 @@ func removeAllArchitectureConstraints(pod *corev1.Pod) bool {
 
 	return removedFromNodeSelector || removedFromNodeAffinity
 }
-
-// Made with Bob

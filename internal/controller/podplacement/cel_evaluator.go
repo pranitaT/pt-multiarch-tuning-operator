@@ -242,5 +242,3 @@ func validateCELExpression(expression string) error {
 	_, err = evaluator.compile(expression)
 	return err
 }
-
-// Made with Bob

@@ -1,4 +1,4 @@
-﻿/*
+/*
 Copyright 2026 Red Hat, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -497,8 +497,8 @@ func TestCELEvaluatorNegativeCases(t *testing.T) {
 		},
 		{
 			name:        "unicode in labels",
-			expression:  "has(self.metadata.labels.app) && self.metadata.labels.app == '╤é╨╡╤ü╤é'",
-			pod:         &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test", Labels: map[string]string{"app": "╤é╨╡╤ü╤é"}}},
+			expression:  "has(self.metadata.labels.app) && self.metadata.labels.app == '????????'",
+			pod:         &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test", Labels: map[string]string{"app": "????????"}}},
 			expectError: false,
 			description: "Should handle unicode in label values",
 		},

@@ -94,5 +94,3 @@ func (r *PodReconciler) applyCELArchitecturePlacement(ctx context.Context, ppc m
 
 	return true
 }
-
-// Made with Bob
