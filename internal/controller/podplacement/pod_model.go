@@ -590,6 +590,15 @@ func (pod *Pod) shouldIgnorePod(cppc *v1beta1.ClusterPodPlacementConfig, matchin
 // isNodeSelectorConfiguredForArchitecture returns true if the pod has already a nodeSelector for the architecture label
 // or if all the nodeSelectorTerms in the nodeAffinity field have a matchExpression for the architecture label.
 func (pod *Pod) isNodeSelectorConfiguredForArchitecture() bool {
+	log := ctrllog.FromContext(pod.Ctx())
+
+	// TODO(debug): remove after issue resolved
+	log.V(2).Info("[RECONCILE] isNodeSelectorConfiguredForArchitecture entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.UID,
+		"nodeSelector", pod.Spec.NodeSelector,
+	)
+
 	// if the pod has the nodeSelector field set for the kubernetes.io/arch label, we ignore it.
 	// in fact, the nodeSelector field is ANDed with the nodeAffinity field, and we want to give the user the main control, if they
 	// manually set a predicate for the kubernetes.io/arch label.
@@ -598,12 +607,26 @@ func (pod *Pod) isNodeSelectorConfiguredForArchitecture() bool {
 	for key := range pod.Spec.NodeSelector {
 		if key == utils.ArchLabel {
 			pod.publishIgnorePod()
+			// TODO(debug): remove after issue resolved
+			log.Info("[RECONCILE] isNodeSelectorConfiguredForArchitecture — arch found in nodeSelector",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.UID,
+				"result", true,
+				"reason", "kubernetes.io/arch key present in pod.Spec.NodeSelector",
+			)
 			return true
 		}
 	}
 	// Check if Affinity, NodeAffinity, or RequiredDuringSchedulingIgnoredDuringExecution is nil
 	// If any of these are nil, assume there are no specific node selector terms to check, so return true.
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil || pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		// TODO(debug): remove after issue resolved
+		log.V(2).Info("[RECONCILE] isNodeSelectorConfiguredForArchitecture — no required affinity configured",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.UID,
+			"result", false,
+			"reason", "Affinity/NodeAffinity/RequiredDuringSchedulingIgnoredDuringExecution is nil",
+		)
 		return false
 	}
 
@@ -623,12 +646,28 @@ func (pod *Pod) isNodeSelectorConfiguredForArchitecture() bool {
 
 		// If one of the NodeSelectorTerms does not have the architecture label, return false
 		if !hasArchLabel {
+			// TODO(debug): remove after issue resolved
+			log.V(2).Info("[RECONCILE] isNodeSelectorConfiguredForArchitecture — term without arch label found",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.UID,
+				"result", false,
+				"reason", "at least one NodeSelectorTerm does not contain kubernetes.io/arch",
+				"term", nodeSelectorTerm,
+			)
 			return false
 		}
 
 	}
 
 	// If all NodeSelectorTerms contain the architecture label, return true
+	// TODO(debug): remove after issue resolved
+	log.Info("[RECONCILE] isNodeSelectorConfiguredForArchitecture — all terms have arch label",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.UID,
+		"result", true,
+		"reason", "all NodeSelectorTerms contain kubernetes.io/arch — pod will be treated as already configured",
+		"termsCount", len(pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms),
+	)
 	return true
 }
 
@@ -679,20 +718,60 @@ func (pod *Pod) isPreferredAffinityConfiguredForArchitecture() bool {
 // filterMatchingPPCs returns only PPCs whose label selector matches this pod.
 // This is done once per reconcile/webhook call to avoid redundant selector evaluations.
 func (pod *Pod) filterMatchingPPCs(ppcList *v1beta1.PodPlacementConfigList) []v1beta1.PodPlacementConfig {
+	log := ctrllog.FromContext(pod.Ctx())
 	var matching []v1beta1.PodPlacementConfig
+
+	// TODO(debug): remove after issue resolved
+	log.Info("[RECONCILE] filterMatchingPPCs entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.UID,
+		"podLabels", pod.Labels,
+		"totalPPCs", len(ppcList.Items),
+	)
 
 	for _, ppc := range ppcList.Items {
 		selector, err := metav1.LabelSelectorAsSelector(ppc.Spec.LabelSelector)
 		if err != nil {
+			// TODO(debug): remove after issue resolved
+			log.Info("[RECONCILE] filterMatchingPPCs — invalid label selector, skipping PPC",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.UID,
+				"ppcName", ppc.Name,
+				"labelSelector", ppc.Spec.LabelSelector,
+				"error", err.Error(),
+			)
 			// Invalid selector means it doesn't match - skip
 			continue
 		}
 
+		selectorMatches := selector == labels.Nothing() || selector.Matches(labels.Set(pod.Labels))
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] filterMatchingPPCs — PPC selector evaluation",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.UID,
+			"ppcName", ppc.Name,
+			"labelSelector", ppc.Spec.LabelSelector,
+			"selectorMatches", selectorMatches,
+			"isNothingSelector", selector == labels.Nothing(),
+		)
+
 		// Empty selector (Nothing()) or matching selector
-		if selector == labels.Nothing() || selector.Matches(labels.Set(pod.Labels)) {
+		if selectorMatches {
 			matching = append(matching, ppc)
 		}
 	}
+
+	// TODO(debug): remove after issue resolved
+	matchingNames := make([]string, len(matching))
+	for i, m := range matching {
+		matchingNames[i] = m.Name
+	}
+	log.Info("[RECONCILE] filterMatchingPPCs exit",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.UID,
+		"matchingCount", len(matching),
+		"matchingPPCNames", matchingNames,
+	)
 
 	return matching
 }

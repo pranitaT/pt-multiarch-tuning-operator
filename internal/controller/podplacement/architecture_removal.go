@@ -17,6 +17,8 @@ limitations under the License.
 package podplacement
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/openshift/multiarch-tuning-operator/pkg/utils"
@@ -25,15 +27,35 @@ import (
 // removeArchitectureFromNodeSelector removes the kubernetes.io/arch key from the pod's nodeSelector
 // Returns true if the key was present and removed, false otherwise
 func removeArchitectureFromNodeSelector(pod *corev1.Pod) bool {
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[REMOVE] removeArchitectureFromNodeSelector entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"nodeSelector", pod.Spec.NodeSelector,
+	)
+
 	if pod.Spec.NodeSelector == nil {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[REMOVE] removeArchitectureFromNodeSelector — nodeSelector is nil, nothing to remove",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		)
 		return false
 	}
 
 	if _, exists := pod.Spec.NodeSelector[utils.ArchLabel]; exists {
 		delete(pod.Spec.NodeSelector, utils.ArchLabel)
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[REMOVE] removeArchitectureFromNodeSelector — arch label removed from nodeSelector",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"removedKey", utils.ArchLabel,
+			"postNodeSelector", pod.Spec.NodeSelector,
+		)
 		return true
 	}
 
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[REMOVE] removeArchitectureFromNodeSelector — arch label not present in nodeSelector, nothing removed",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+	)
 	return false
 }
 
@@ -44,12 +66,31 @@ func removeArchitectureFromNodeSelector(pod *corev1.Pod) bool {
 // preferredDuringSchedulingIgnoredDuringExecution is preserved as per enhancement doc.
 // Returns true if any architecture constraints were removed, false otherwise
 func removeArchitectureFromNodeAffinity(pod *corev1.Pod) bool {
+	// TODO(debug): remove after issue resolved
+	var preTerms interface{}
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil &&
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		preTerms = pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	}
+	archDebugLog.Info("[REMOVE] removeArchitectureFromNodeAffinity entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"preRequiredTerms", preTerms,
+	)
+
 	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[REMOVE] removeArchitectureFromNodeAffinity — affinity or nodeAffinity is nil, nothing to remove",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		)
 		return false
 	}
 
 	nodeAffinity := pod.Spec.Affinity.NodeAffinity
 	if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[REMOVE] removeArchitectureFromNodeAffinity — RequiredDuringSchedulingIgnoredDuringExecution is nil, nothing to remove",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		)
 		return false
 	}
 
@@ -99,6 +140,19 @@ func removeArchitectureFromNodeAffinity(pod *corev1.Pod) bool {
 		pod.Spec.Affinity = nil
 	}
 
+	// TODO(debug): remove after issue resolved
+	var postTerms interface{}
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil &&
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		postTerms = pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	}
+	archDebugLog.Info("[REMOVE] removeArchitectureFromNodeAffinity exit",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"removed", removed,
+		"postRequiredTerms", postTerms,
+		"affinityNilAfterCleanup", pod.Spec.Affinity == nil,
+	)
+
 	return removed
 }
 
@@ -108,8 +162,22 @@ func removeArchitectureFromNodeAffinity(pod *corev1.Pod) bool {
 // - kubernetes.io/arch matchExpressions from requiredDuringSchedulingIgnoredDuringExecution
 // Returns true if any constraints were removed, false otherwise
 func removeAllArchitectureConstraints(pod *corev1.Pod) bool {
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[REMOVE] removeAllArchitectureConstraints entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"nodeSelector", pod.Spec.NodeSelector,
+	)
+
 	removedFromNodeSelector := removeArchitectureFromNodeSelector(pod)
 	removedFromNodeAffinity := removeArchitectureFromNodeAffinity(pod)
 
-	return removedFromNodeSelector || removedFromNodeAffinity
+	result := removedFromNodeSelector || removedFromNodeAffinity
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[REMOVE] removeAllArchitectureConstraints exit",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"removedFromNodeSelector", removedFromNodeSelector,
+		"removedFromNodeAffinity", removedFromNodeAffinity,
+		"anyRemoved", result,
+	)
+	return result
 }

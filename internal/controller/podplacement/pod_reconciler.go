@@ -19,6 +19,7 @@ package podplacement
 import (
 	"context"
 	"fmt"
+	"reflect"
 	runtime2 "runtime"
 	"sort"
 	"time"
@@ -82,6 +83,27 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		var preRequiredTerms interface{}
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			preRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[RECONCILE] START",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", p.UID,
+			"resourceVersion", p.ResourceVersion,
+			"generation", p.Generation,
+			"hasSchedulingGate", pod.HasSchedulingGate(),
+			"schedulingGates", p.Spec.SchedulingGates,
+			"nodeSelector", p.Spec.NodeSelector,
+			"labels", p.Labels,
+			"requiredNodeAffinityTerms", preRequiredTerms,
+		)
+	}()
+
 	log.V(1).Info("Reconciling pod",
 		"pod", pod.Name,
 		"namespace", pod.Namespace,
@@ -90,16 +112,67 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Pods without the scheduling gate should be ignored.
 	if !pod.HasSchedulingGate() {
 		log.V(2).Info("Pod does not have the scheduling gate. Ignoring...")
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] early return — pod has no scheduling gate",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+		)
 		return ctrl.Result{}, nil
 	}
 	metrics.ProcessedPodsCtrl.Inc()
 	defer utils.HistogramObserve(now, metrics.TimeToProcessGatedPod)
 
+	// TODO(debug): remove after issue resolved — deep copy for change detection
+	podSpecBefore := pod.PodObject().Spec.DeepCopy()
+
 	r.processPod(ctx, pod)
+
+	// TODO(debug): remove after issue resolved — compare spec before and after processPod
+	func() {
+		podSpecAfter := pod.PodObject().Spec.DeepCopy()
+		specChanged := !reflect.DeepEqual(podSpecBefore, podSpecAfter)
+		var beforeRequiredTerms, afterRequiredTerms interface{}
+		if podSpecBefore.Affinity != nil && podSpecBefore.Affinity.NodeAffinity != nil &&
+			podSpecBefore.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			beforeRequiredTerms = podSpecBefore.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		if podSpecAfter.Affinity != nil && podSpecAfter.Affinity.NodeAffinity != nil &&
+			podSpecAfter.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			afterRequiredTerms = podSpecAfter.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[RECONCILE] spec change detection after processPod",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"specChanged", specChanged,
+			"beforeNodeSelector", podSpecBefore.NodeSelector,
+			"afterNodeSelector", podSpecAfter.NodeSelector,
+			"beforeRequiredNodeAffinityTerms", beforeRequiredTerms,
+			"afterRequiredNodeAffinityTerms", afterRequiredTerms,
+			"schedulingGateAfter", podSpecAfter.SchedulingGates,
+		)
+	}()
 
 	log.V(1).Info("Updating pod",
 		"pod", pod.Name,
 		"namespace", pod.Namespace)
+
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		var preUpdateRequiredTerms interface{}
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			preUpdateRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[RECONCILE][PATCH] about to Update pod",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", p.UID,
+			"resourceVersion", p.ResourceVersion,
+			"schedulingGates", p.Spec.SchedulingGates,
+			"nodeSelector", p.Spec.NodeSelector,
+			"requiredNodeAffinityTerms", preUpdateRequiredTerms,
+		)
+	}()
 
 	err := r.Update(ctx, pod.PodObject())
 	if err != nil {
@@ -107,12 +180,29 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			"pod", pod.Name,
 			"namespace", pod.Namespace)
 		pod.PublishEvent(corev1.EventTypeWarning, ArchitectureAwareSchedulingGateRemovalFailure, SchedulingGateRemovalFailureMsg)
+		// TODO(debug): remove after issue resolved
+		log.Error(err, "[RECONCILE][PATCH] Update FAILED",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"resourceVersion", pod.PodObject().ResourceVersion,
+			"errorType", fmt.Sprintf("%T", err),
+		)
 		return ctrl.Result{}, err
 	}
 
 	log.V(1).Info("Pod updated successfully",
 		"pod", pod.Name,
 		"namespace", pod.Namespace)
+
+	// TODO(debug): remove after issue resolved
+	log.Info("[RECONCILE][PATCH] Update succeeded",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.PodObject().UID,
+		"newResourceVersion", pod.PodObject().ResourceVersion,
+		"schedulingGateRemoved", !pod.HasSchedulingGate(),
+		"duration", time.Since(now).String(),
+	)
+
 	if !pod.HasSchedulingGate() {
 		// Only publish the event if the scheduling gate has been removed and the pod has been updated successfully.
 		pod.PublishEvent(corev1.EventTypeNormal, ArchitectureAwareSchedulingGateRemovalSuccess, SchedulingGateRemovalSuccessMsg)
@@ -125,7 +215,18 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 	log := ctrllog.FromContext(ctx)
 	log.V(1).Info("Processing pod")
 
+	// TODO(debug): remove after issue resolved
+	processPodStart := time.Now()
+	log.Info("[RECONCILE] processPod entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.PodObject().UID,
+		"resourceVersion", pod.PodObject().ResourceVersion,
+	)
+
 	cppc := clusterpodplacementconfig.GetClusterPodPlacementConfig()
+
+	// TODO(debug): remove after issue resolved
+	ppcSource := "CACHE"
 
 	// List existing PodPlacementConfigs in the same namespace
 	ppcList := &multiarchv1beta1.PodPlacementConfigList{}
@@ -139,14 +240,55 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 	// verify with a direct API read to avoid a race where a just-created PPC is missed
 	// and the pod is permanently ungated without its preferred affinity.
 	if len(ppcList.Items) == 0 {
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] informer cache returned no PPCs — falling back to APIReader",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcSource", "CACHE",
+		)
 		if err := r.APIReader.List(ctx, ppcList, client.InNamespace(pod.Namespace)); err != nil {
 			pod.handleError(err, "failed to list PodPlacementConfigs from API server")
 			return
+		}
+		// TODO(debug): remove after issue resolved
+		ppcSource = "APIReader"
+		{
+			type ppcRV struct {
+				Name            string
+				ResourceVersion string
+			}
+			ppcRVs := make([]ppcRV, len(ppcList.Items))
+			for i, p := range ppcList.Items {
+				ppcRVs[i] = ppcRV{Name: p.Name, ResourceVersion: p.ResourceVersion}
+			}
+			log.Info("[RECONCILE] APIReader PPC list result",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.PodObject().UID,
+				"ppcSource", "APIReader",
+				"ppcCountFromAPI", len(ppcList.Items),
+				"ppcResourceVersions", ppcRVs,
+			)
 		}
 	}
 
 	// Filter to only PPCs that match this pod's labels - do this once for efficiency
 	matchingPPCs := pod.filterMatchingPPCs(ppcList)
+
+	// TODO(debug): remove after issue resolved
+	{
+		ppcNames := make([]string, len(matchingPPCs))
+		for i, p := range matchingPPCs {
+			ppcNames[i] = p.Name
+		}
+		log.Info("[RECONCILE] processPod matching PPCs",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcSource", ppcSource,
+			"totalPPCsInNamespace", len(ppcList.Items),
+			"matchingPPCCount", len(matchingPPCs),
+			"matchingPPCNames", ppcNames,
+		)
+	}
 
 	if pod.shouldIgnorePod(cppc, matchingPPCs) {
 		log.V(3).Info("A pod with the scheduling gate should be ignored. Ignoring...")
@@ -156,6 +298,13 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 		//	(for example another actor set the nodeAffinity already for the kubernetes.io/arch label).
 		// In both cases, we should just remove the scheduling gate.
 		log.V(1).Info("Removing the scheduling gate from pod.")
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] processPod exit — shouldIgnorePod returned true, gate removed",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"exitReason", "pod ignored by shouldIgnorePod",
+			"duration", time.Since(processPodStart).String(),
+		)
 		pod.RemoveSchedulingGate()
 		pod.PublishEvent(corev1.EventTypeWarning, ArchitectureAwareGatedPodIgnored, ArchitectureAwareGatedPodIgnoredMsg)
 		return
@@ -165,13 +314,31 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 	// or if the reconcile loop has already applied the PPCs/CPPC (e.g., due to a retry or re-reconciliation)
 	celApplied := false
 	if !pod.isPreferredAffinityConfiguredForArchitecture() {
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] preferred affinity not pre-configured — running applyMatchingPPCs",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+		)
 		celApplied = r.applyMatchingPPCs(ctx, matchingPPCs, pod)
+
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] applyMatchingPPCs returned",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"celApplied", celApplied,
+		)
 
 		if cppc != nil && cppc.PluginsEnabled(common.NodeAffinityScoringPluginName) {
 			pod.SetPreferredArchNodeAffinity(cppc.Spec.Plugins.NodeAffinityScoring, multiarchv1beta1.ClusterPodPlacementConfigKind)
 		}
 	} else {
 		log.V(2).Info("Pod already has architecture-related preferred affinity. This could be user-defined or from a previous reconcile loop. Skipping PPC/CPPC preferred affinity processing.")
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] skipping applyMatchingPPCs — isPreferredAffinityConfiguredForArchitecture returned true",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"reason", "preferred architecture affinity already configured; CEL and NodeAffinityScoring plugins will NOT run",
+		)
 		// Track that configs were skipped due to user-defined preferences
 		r.trackSkippedMatchingConfigs(ctx, pod, cppc, matchingPPCs)
 	}
@@ -187,6 +354,13 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 			log.V(2).Info("No preferred node affinity was set")
 		}
 		log.V(1).Info("Removing the scheduling gate from pod.")
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] processPod exit — CEL applied, gate removed, image detection skipped",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"exitReason", "CEL architecture placement applied",
+			"duration", time.Since(processPodStart).String(),
+		)
 		pod.RemoveSchedulingGate()
 		return
 	}
@@ -225,6 +399,15 @@ func (r *PodReconciler) processPod(ctx context.Context, pod *Pod) {
 			log.V(2).Info("No preferred node affinity was set")
 		}
 		log.V(1).Info("Removing the scheduling gate from pod.")
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE] processPod exit — image-based detection complete, gate removed",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"exitReason", "image-based architecture detection",
+			"imageDetectionError", err != nil,
+			"maxRetriesReached", pod.maxRetries(),
+			"duration", time.Since(processPodStart).String(),
+		)
 		pod.RemoveSchedulingGate()
 	}
 }
@@ -240,17 +423,44 @@ func (r *PodReconciler) applyMatchingPPCs(ctx context.Context, matchingPPCs []mu
 		return matchingPPCs[i].Spec.Priority > matchingPPCs[j].Spec.Priority
 	})
 
+	// TODO(debug): remove after issue resolved
+	log.Info("[RECONCILE] applyMatchingPPCs entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.PodObject().UID,
+		"matchingPPCCount", len(matchingPPCs),
+	)
+
 	// Check for celArchitecturePlacement plugin first (highest priority)
 	// Only the first matching PPC with celArchitecturePlacement enabled is applied
 	celApplied := false
 	for _, ppc := range matchingPPCs {
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE][CEL] calling applyCELArchitecturePlacement",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcName", ppc.Name,
+			"ppcPriority", ppc.Spec.Priority,
+			"celPluginEnabled", ppc.PluginsEnabled(common.CelArchitecturePlacementPluginName),
+		)
 		if r.applyCELArchitecturePlacement(ctx, ppc, pod) {
 			log.V(1).Info("celArchitecturePlacement plugin applied, will skip image-based detection", "PodPlacementConfig", ppc.Name)
+			// TODO(debug): remove after issue resolved
+			log.Info("[RECONCILE][CEL] applyCELArchitecturePlacement returned true — CEL applied",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.PodObject().UID,
+				"ppcName", ppc.Name,
+			)
 			celApplied = true
 			// CEL plugin was applied, it takes precedence over image-based detection
 			// Continue to allow NodeAffinityScoring to run (coexistence per enhancement)
 			break
 		}
+		// TODO(debug): remove after issue resolved
+		log.Info("[RECONCILE][CEL] applyCELArchitecturePlacement returned false — trying next PPC or image detection",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcName", ppc.Name,
+		)
 	}
 
 	// For each matching namespace-scoped configuration, apply NodeAffinityScoring if plugin is enabled

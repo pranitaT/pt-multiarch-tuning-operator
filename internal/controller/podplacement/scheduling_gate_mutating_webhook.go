@@ -18,11 +18,13 @@ package podplacement
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
 
+	jsonpatch "gomodules.xyz/jsonpatch/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,6 +84,24 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 
 	log := ctrllog.FromContext(ctx).WithValues("namespace", pod.Namespace, "name", pod.Name)
 
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		var preRequiredTerms interface{}
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			preRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[WEBHOOK] Handle entry",
+			"uid", p.UID,
+			"resourceVersion", p.ResourceVersion,
+			"nodeSelector", p.Spec.NodeSelector,
+			"schedulingGates", p.Spec.SchedulingGates,
+			"labels", p.Labels,
+			"preRequiredNodeAffinityTerms", preRequiredTerms,
+		)
+	}()
+
 	cppc := clusterpodplacementconfig.GetClusterPodPlacementConfig()
 
 	// List existing PodPlacementConfigs in the same namespace
@@ -95,6 +115,22 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	// Filter to only PPCs that match this pod's labels - do this once for efficiency
 	matchingPPCs := pod.filterMatchingPPCs(ppcList)
 
+	// TODO(debug): remove after issue resolved
+	{
+		ppcNames := make([]string, len(matchingPPCs))
+		for i, p := range matchingPPCs {
+			ppcNames[i] = p.Name
+		}
+		log.Info("[WEBHOOK] PPC matching result",
+			"uid", pod.PodObject().UID,
+			"ppcSource", "CACHE",
+			"totalPPCsInNamespace", len(ppcList.Items),
+			"matchingPPCCount", len(matchingPPCs),
+			"matchingPPCNames", ppcNames,
+			"podLabels", pod.Labels,
+		)
+	}
+
 	// Set label to indicate if preferred affinity will be set by CPPC or any matching PPC
 	if (cppc != nil && cppc.PluginsEnabled(common.NodeAffinityScoringPluginName)) ||
 		pod.hasMatchingPPCWithPlugin(matchingPPCs) {
@@ -105,11 +141,50 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 
 	if pod.shouldIgnorePod(cppc, matchingPPCs) {
 		log.V(3).Info("Ignoring the pod")
+		// TODO(debug): remove after issue resolved
+		log.Info("[WEBHOOK] early return — shouldIgnorePod returned true, CEL will NOT run",
+			"uid", pod.PodObject().UID,
+		)
+		// TODO(debug): remove after issue resolved
+		log.Info("[WEBHOOK][SUMMARY]",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"matchingPPCs", len(matchingPPCs),
+			"selectedPPC", "",
+			"matchedRule", "",
+			"fallbackUsed", false,
+			"architectures", []string(nil),
+			"schedulingGateAdded", false,
+			"admissionPatchGenerated", true,
+			"exitReason", "pod ignored by shouldIgnorePod",
+			"duration", time.Since(responseTimeStart).String(),
+		)
 		return a.patchedPodResponse(pod.PodObject(), req)
 	}
 
+	// TODO(debug): remove after issue resolved
+	log.Info("[WEBHOOK] shouldIgnorePod returned false — proceeding to applyCELInWebhook",
+		"uid", pod.PodObject().UID,
+	)
+
 	// Apply CEL architecture placement in webhook before pod is persisted
 	a.applyCELInWebhook(ctx, pod, matchingPPCs)
+
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		var postRequiredTerms interface{}
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			postRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[WEBHOOK] post-applyCELInWebhook state",
+			"uid", p.UID,
+			"nodeSelector", p.Spec.NodeSelector,
+			"schedulingGates", p.Spec.SchedulingGates,
+			"postRequiredNodeAffinityTerms", postRequiredTerms,
+		)
+	}()
 
 	pod.ensureSchedulingGate()
 	// We also add a label to the pod to indicate that the scheduling gate was added
@@ -125,6 +200,91 @@ func (a *PodSchedulingGateMutatingWebHook) Handle(ctx context.Context, req admis
 	metrics.GatedPods.Inc()
 	metrics.GatedPodsGauge.Inc()
 	log.V(2).Info("Accepting pod")
+
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		var finalRequiredTerms interface{}
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			finalRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		}
+		log.Info("[WEBHOOK] Handle exit — returning admission patch",
+			"uid", p.UID,
+			"nodeSelector", p.Spec.NodeSelector,
+			"schedulingGates", p.Spec.SchedulingGates,
+			"labels", p.Labels,
+			"finalRequiredNodeAffinityTerms", finalRequiredTerms,
+			"duration", time.Since(responseTimeStart).String(),
+		)
+	}()
+
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		// Determine which architectures were applied by reading the final required node affinity terms.
+		var appliedArchitectures []string
+		if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			for _, term := range p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+				for _, expr := range term.MatchExpressions {
+					if expr.Key == "kubernetes.io/arch" {
+						appliedArchitectures = expr.Values
+					}
+				}
+			}
+		}
+		// Determine the selected PPC name (highest priority PPC with CEL enabled that matched).
+		selectedPPC := ""
+		for _, ppc := range matchingPPCs {
+			if ppc.PluginsEnabled(common.CelArchitecturePlacementPluginName) {
+				selectedPPC = ppc.Name
+				break
+			}
+		}
+		log.Info("[WEBHOOK][SUMMARY]",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", p.UID,
+			"matchingPPCs", len(matchingPPCs),
+			"selectedPPC", selectedPPC,
+			"architectures", appliedArchitectures,
+			"schedulingGateAdded", pod.HasSchedulingGate(),
+			"admissionPatchGenerated", true,
+			"duration", time.Since(responseTimeStart).String(),
+		)
+	}()
+
+	// TODO(debug): remove after issue resolved
+	func() {
+		p := pod.PodObject()
+		marshaledMutated, marshalErr := json.Marshal(p)
+		mutatedSizeBytes := 0
+		patchOperationCount := 0
+		if marshalErr == nil {
+			mutatedSizeBytes = len(marshaledMutated)
+			if patches, patchErr := jsonpatch.CreatePatch(req.Object.Raw, marshaledMutated); patchErr == nil {
+				patchOperationCount = len(patches)
+			}
+		}
+		hasRequiredNodeAffinity := p.Spec.Affinity != nil &&
+			p.Spec.Affinity.NodeAffinity != nil &&
+			p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil &&
+			len(p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms) > 0
+		hasSchedulingGate := pod.HasSchedulingGate()
+		hasNodeSelectorMod := len(p.Spec.NodeSelector) > 0
+		log.Info("[WEBHOOK][PATCH] admission patch metadata",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", p.UID,
+			"mutatedPodSizeBytes", mutatedSizeBytes,
+			"originalPodSizeBytes", len(req.Object.Raw),
+			"patchDeltaBytes", mutatedSizeBytes-len(req.Object.Raw),
+			"patchOperationCount", patchOperationCount,
+			"patchContainsRequiredNodeAffinity", hasRequiredNodeAffinity,
+			"patchContainsSchedulingGate", hasSchedulingGate,
+			"patchContainsNodeSelectorMod", hasNodeSelectorMod,
+		)
+	}()
+
 	return a.patchedPodResponse(pod.PodObject(), req)
 }
 
@@ -183,6 +343,13 @@ func (a *PodSchedulingGateMutatingWebHook) delayedSchedulingGatedEvent(ctx conte
 func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context, pod *Pod, matchingPPCs []multiarchv1beta1.PodPlacementConfig) {
 	log := ctrllog.FromContext(ctx)
 
+	// TODO(debug): remove after issue resolved
+	log.Info("[WEBHOOK][CEL] applyCELInWebhook entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.PodObject().UID,
+		"matchingPPCCount", len(matchingPPCs),
+	)
+
 	// Sort matching PPCs by descending priority to process highest priority first
 	sort.Slice(matchingPPCs, func(i, j int) bool {
 		return matchingPPCs[i].Spec.Priority > matchingPPCs[j].Spec.Priority
@@ -192,7 +359,31 @@ func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context
 	// we continue to the next PPC (soft failure model). This ensures pod admission always
 	// succeeds even if some PPCs are misconfigured.
 	for _, ppc := range matchingPPCs {
-		if !ppc.PluginsEnabled(common.CelArchitecturePlacementPluginName) {
+		// TODO(debug): remove after issue resolved
+		celEnabled := ppc.PluginsEnabled(common.CelArchitecturePlacementPluginName)
+		ruleCount := 0
+		var fallbackArchs []string
+		if ppc.Spec.Plugins != nil && ppc.Spec.Plugins.CelArchitecturePlacement != nil {
+			ruleCount = len(ppc.Spec.Plugins.CelArchitecturePlacement.Rules)
+			fallbackArchs = ppc.Spec.Plugins.CelArchitecturePlacement.FallbackArchitectures
+		}
+		log.Info("[WEBHOOK][CEL] evaluating PPC",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcName", ppc.Name,
+			"ppcPriority", ppc.Spec.Priority,
+			"celPluginEnabled", celEnabled,
+			"ruleCount", ruleCount,
+			"fallbackArchitectures", fallbackArchs,
+		)
+
+		if !celEnabled {
+			// TODO(debug): remove after issue resolved
+			log.Info("[WEBHOOK][CEL] skipping PPC — CEL plugin not enabled",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.PodObject().UID,
+				"ppcName", ppc.Name,
+			)
 			continue
 		}
 
@@ -200,6 +391,12 @@ func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context
 		if celPlugin == nil {
 			// This should never happen due to webhook validation, but handle defensively
 			log.Error(nil, "CEL plugin enabled but configuration is nil", "PodPlacementConfig", ppc.Name, "pod", pod.Name)
+			// TODO(debug): remove after issue resolved
+			log.Info("[WEBHOOK][CEL] early return — celPlugin is nil despite being enabled",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.PodObject().UID,
+				"ppcName", ppc.Name,
+			)
 			return
 		}
 
@@ -208,8 +405,25 @@ func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context
 		if err != nil {
 			// Log error and continue to next PPC (soft failure - don't block pod admission)
 			log.Error(err, "Failed to evaluate CEL rules, trying next PPC", "PodPlacementConfig", ppc.Name, "pod", pod.Name)
+			// TODO(debug): remove after issue resolved
+			log.Error(err, "[WEBHOOK][CEL] CEL evaluation failed — continuing to next PPC",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", pod.PodObject().UID,
+				"ppcName", ppc.Name,
+			)
 			continue
 		}
+
+		// TODO(debug): remove after issue resolved
+		log.Info("[WEBHOOK][CEL] CEL evaluation result",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"uid", pod.PodObject().UID,
+			"ppcName", ppc.Name,
+			"matched", result.matched,
+			"ruleName", result.ruleName,
+			"architectures", result.architectures,
+			"architecturesEmpty", len(result.architectures) == 0,
+		)
 
 		// Apply architecture constraints (removes existing constraints and sets new ones)
 		applyArchitectureConstraints(pod.PodObject(), result.architectures)
@@ -220,9 +434,34 @@ func (a *PodSchedulingGateMutatingWebHook) applyCELInWebhook(ctx context.Context
 			"ruleMatched", result.matched,
 			"ruleName", result.ruleName)
 
+		// TODO(debug): remove after issue resolved
+		func() {
+			p := pod.PodObject()
+			var postRequiredTerms interface{}
+			if p.Spec.Affinity != nil && p.Spec.Affinity.NodeAffinity != nil &&
+				p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+				postRequiredTerms = p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+			}
+			log.Info("[WEBHOOK][APPLY] post-applyArchitectureConstraints state",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+				"uid", p.UID,
+				"ppcName", ppc.Name,
+				"postNodeSelector", p.Spec.NodeSelector,
+				"postRequiredNodeAffinityTerms", postRequiredTerms,
+				"architecturesApplied", result.architectures,
+			)
+		}()
+
 		// First matching PPC wins - stop processing remaining PPCs
 		return
 	}
+
+	// TODO(debug): remove after issue resolved
+	log.Info("[WEBHOOK][CEL] applyCELInWebhook exit — no PPC applied architecture constraints",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"uid", pod.PodObject().UID,
+		"reason", "no matching PPC had CEL enabled or all evaluations failed/produced empty architectures",
+	)
 }
 
 func NewPodSchedulingGateMutatingWebHook(client client.Client, clientSet *kubernetes.Clientset,

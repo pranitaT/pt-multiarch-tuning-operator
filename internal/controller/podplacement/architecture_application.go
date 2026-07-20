@@ -17,10 +17,17 @@ limitations under the License.
 package podplacement
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/openshift/multiarch-tuning-operator/pkg/utils"
 )
+
+// TODO(debug): remove after issue resolved
+// archDebugLog is a package-level logger used for architecture application/removal debug logging.
+var archDebugLog = ctrllog.Log.WithName("arch-debug")
 
 // applyArchitectureNodeAffinity applies new architecture constraints to a pod's node affinity
 // by updating in-place the requiredDuringSchedulingIgnoredDuringExecution matchExpressions for
@@ -34,7 +41,26 @@ import (
 // 2. Adding the new architecture requirement to each term (or creating a new term if none exist)
 // This approach avoids the Kubernetes API rejection: "no additions/deletions to non-empty NodeSelectorTerms list are allowed"
 func applyArchitectureNodeAffinity(pod *corev1.Pod, architectures []string) {
+	// TODO(debug): remove after issue resolved
+	existingTermsCount := 0
+	var preTerms interface{}
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil &&
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		existingTermsCount = len(pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms)
+		preTerms = pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	}
+	archDebugLog.Info("[AFFINITY] applyArchitectureNodeAffinity entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"architectures", architectures,
+		"existingTermsCount", existingTermsCount,
+		"preRequiredTerms", preTerms,
+	)
+
 	if len(architectures) == 0 {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[AFFINITY] applyArchitectureNodeAffinity early return — architectures empty",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		)
 		return
 	}
 
@@ -62,11 +88,21 @@ func applyArchitectureNodeAffinity(pod *corev1.Pod, architectures []string) {
 
 	// If no terms exist, create a single architecture-only term
 	if len(existingTerms) == 0 {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[AFFINITY] applyArchitectureNodeAffinity — no existing terms, creating new term",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"architectures", architectures,
+		)
 		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []corev1.NodeSelectorTerm{
 			{
 				MatchExpressions: []corev1.NodeSelectorRequirement{architectureRequirement},
 			},
 		}
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[AFFINITY] applyArchitectureNodeAffinity exit — new term created",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"postRequiredTerms", pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
+		)
 		return
 	}
 
@@ -88,6 +124,13 @@ func applyArchitectureNodeAffinity(pod *corev1.Pod, architectures []string) {
 
 	// Reassign the updated terms for clarity and future maintainability
 	pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = existingTerms
+
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[AFFINITY] applyArchitectureNodeAffinity exit — updated existing terms in-place",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"architectures", architectures,
+		"postRequiredTerms", pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
+	)
 }
 
 // applyArchitectureConstraints applies architecture constraints to a pod by updating
@@ -100,7 +143,18 @@ func applyArchitectureNodeAffinity(pod *corev1.Pod, architectures []string) {
 // and controller) ignore the return value since they always proceed with pod processing
 // after calling this function.
 func applyArchitectureConstraints(pod *corev1.Pod, architectures []string) bool {
+	// TODO(debug): remove after issue resolved
+	archDebugLog.Info("[APPLY] applyArchitectureConstraints entry",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"architectures", architectures,
+		"nodeSelector", pod.Spec.NodeSelector,
+	)
+
 	if len(architectures) == 0 {
+		// TODO(debug): remove after issue resolved
+		archDebugLog.Info("[APPLY] applyArchitectureConstraints early return — architectures slice is empty, no constraints applied",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		)
 		return false
 	}
 
@@ -109,6 +163,19 @@ func applyArchitectureConstraints(pod *corev1.Pod, architectures []string) bool 
 
 	// Update architecture constraints in-place within node affinity
 	applyArchitectureNodeAffinity(pod, architectures)
+
+	// TODO(debug): remove after issue resolved
+	var postRequiredTerms interface{}
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil &&
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		postRequiredTerms = pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	}
+	archDebugLog.Info("[APPLY] applyArchitectureConstraints exit",
+		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+		"architecturesApplied", architectures,
+		"postNodeSelector", pod.Spec.NodeSelector,
+		"postRequiredNodeAffinityTerms", postRequiredTerms,
+	)
 
 	// Always return true because we always modify the pod by applying architecture constraints
 	return true
